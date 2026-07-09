@@ -1,0 +1,53 @@
+# Horizontal Pod Autoscaler for the Ray GPU worker group, driven by custom
+# GPU-utilization metrics exported via Prometheus + the prometheus-adapter.
+#
+# Prereqs:
+#   - Prometheus (see monitoring.yaml) scraping DCGM + our /metrics endpoint.
+#   - prometheus-adapter exposing `gpu_utilization` as a custom metric.
+#   - KubeRay worker group exposed as a scalable target.
+#
+# The cluster-autoscaler (cloud-provider specific) then adds/removes GPU nodes
+# as pods go pending. Node-level autoscaling is configured on the node pool,
+# not here.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gpu-worker-hpa
+  namespace: gpu-training
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gpu-workers
+  minReplicas: 1
+  maxReplicas: 16
+  metrics:
+    # Scale on average GPU utilization across worker pods.
+    - type: Pods
+      pods:
+        metric:
+          name: gpu_utilization
+        target:
+          type: AverageValue
+          averageValue: "700m" # 0.70 utilization
+    # Also react to pending training tasks in the queue.
+    - type: Pods
+      pods:
+        metric:
+          name: pending_training_tasks
+        target:
+          type: AverageValue
+          averageValue: "4"
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120

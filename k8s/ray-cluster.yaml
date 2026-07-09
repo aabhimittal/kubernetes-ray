@@ -1,0 +1,122 @@
+# Ray cluster for GPU training using the KubeRay operator (RayCluster CRD).
+# Prereq: install the KubeRay operator, e.g.
+#   helm repo add kuberay https://ray-project.github.io/kuberay-helm/
+#   helm install kuberay-operator kuberay/kuberay-operator
+apiVersion: ray.io/v1
+kind: RayCluster
+metadata:
+  name: gpu-training-cluster
+  namespace: gpu-training
+  labels:
+    app: ray-gpu-training
+spec:
+  rayVersion: "2.9.0"
+  # ---------------------------------------------------------------------------
+  # Head node: no GPUs, runs the Ray dashboard + our app dashboard.
+  # ---------------------------------------------------------------------------
+  headGroupSpec:
+    rayStartParams:
+      dashboard-host: "0.0.0.0"
+      num-gpus: "0"
+    template:
+      metadata:
+        labels:
+          app: ray-gpu-training
+          component: head
+      spec:
+        containers:
+          - name: ray-head
+            image: ghcr.io/OWNER/ray-k8s-gpu-scaling:latest
+            ports:
+              - containerPort: 6379
+                name: gcs
+              - containerPort: 8265
+                name: dashboard
+              - containerPort: 8266
+                name: app-dashboard
+              - containerPort: 10001
+                name: client
+            resources:
+              requests:
+                cpu: "4"
+                memory: 16Gi
+              limits:
+                cpu: "8"
+                memory: 32Gi
+            volumeMounts:
+              - name: checkpoints-nfs
+                mountPath: /mnt/nfs/checkpoints
+              - name: dshm
+                mountPath: /dev/shm
+        volumes:
+          - name: checkpoints-nfs
+            persistentVolumeClaim:
+              claimName: checkpoints-nfs
+          - name: dshm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 16Gi
+  # ---------------------------------------------------------------------------
+  # GPU worker group: autoscaled between 1 and 16 replicas.
+  # ---------------------------------------------------------------------------
+  workerGroupSpecs:
+    - groupName: gpu-workers
+      replicas: 1
+      minReplicas: 1
+      maxReplicas: 16
+      rayStartParams:
+        num-gpus: "1"
+      template:
+        metadata:
+          labels:
+            app: ray-gpu-training
+            component: worker
+        spec:
+          containers:
+            - name: ray-worker
+              image: ghcr.io/OWNER/ray-k8s-gpu-scaling:latest
+              resources:
+                requests:
+                  cpu: "8"
+                  memory: 48Gi
+                  nvidia.com/gpu: "1"
+                limits:
+                  cpu: "16"
+                  memory: 64Gi
+                  nvidia.com/gpu: "1"
+              volumeMounts:
+                - name: checkpoints-nfs
+                  mountPath: /mnt/nfs/checkpoints
+                - name: local-ssd
+                  mountPath: /mnt/local-ssd/checkpoints
+                - name: dshm
+                  mountPath: /dev/shm
+          # Schedule only on GPU nodes and tolerate the GPU taint.
+          nodeSelector:
+            cloud.google.com/gke-accelerator: nvidia-tesla-a100
+          tolerations:
+            - key: nvidia.com/gpu
+              operator: Exists
+              effect: NoSchedule
+          volumes:
+            - name: checkpoints-nfs
+              persistentVolumeClaim:
+                claimName: checkpoints-nfs
+            - name: local-ssd
+              emptyDir: {}
+            - name: dshm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 32Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: checkpoints-nfs
+  namespace: gpu-training
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 500Gi

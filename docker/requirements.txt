@@ -1,0 +1,8 @@
+# Core runtime dependencies for the Ray + K8s GPU scaling stack.
+ray[default]>=2.9.0
+numpy>=1.24
+torch>=2.1
+pynvml>=11.5
+prometheus-client>=0.19
+
+# Testing / dev (installed via requirements-dev or `pip install .[dev]`).
