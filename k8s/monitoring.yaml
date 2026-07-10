@@ -1,0 +1,74 @@
+# Prometheus scrape configuration + Grafana datasource for the GPU training
+# stack. In production prefer the kube-prometheus-stack Helm chart; this
+# manifest shows the app-specific scrape targets and a service exposing the
+# custom /metrics endpoint from src/monitoring/dashboard.py.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ray-app-metrics
+  namespace: gpu-training
+  labels:
+    app: ray-gpu-training
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8266"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app: ray-gpu-training
+    component: head
+  ports:
+    - name: app-dashboard
+      port: 8266
+      targetPort: 8266
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: gpu-training
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+      # Our application metrics (throughput, loss, allocated GPUs).
+      - job_name: ray-app-metrics
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [gpu-training]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            target_label: __address__
+            regex: (.+)
+            replacement: ${1}
+      # NVIDIA DCGM exporter (installed by the GPU operator).
+      - job_name: dcgm
+        kubernetes_sd_configs:
+          - role: endpoints
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_service_label_app]
+            action: keep
+            regex: nvidia-dcgm-exporter
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasource
+  namespace: gpu-training
+  labels:
+    grafana_datasource: "1"
+data:
+  datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus.gpu-training.svc:9090
+        isDefault: true
